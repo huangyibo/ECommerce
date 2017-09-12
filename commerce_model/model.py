@@ -26,6 +26,16 @@ def compute_settled_shop_num(model):
     pass
 
 
+def get_last_agent_id_from_schedule(schedule):
+    """ Return the last agent id from model.schedule."""
+    if schedule is not None:
+        agent_len = len(schedule.agents)
+        last_agent = schedule.agents[agent_len - 1]
+        items = last_agent.unique_id.split('_')
+        return items[len(items) -1]
+    return None
+
+
 class CommerceModel(Model):
     """
     A simple model of an E-Commerce where Consumer agent, Company(include Offline Retailer,
@@ -134,9 +144,10 @@ class CommerceModel(Model):
         for i in range(num_settled_shop_agents):
             unique_id = "settled_shop_" + i
             subsidy_cost = 10
+            rental_cost = 40 # 入驻平台电商成本
             # 随机选取一个平台电商，作为Settled Shop所依赖的电商平台
             platform_e_commerce_agent = choice(self.platform_e_commerce_schedule.agents)
-            settled_shop_agent = SettledShopAgent(unique_id, self, subsidy_cost, platform_e_commerce_agent)
+            settled_shop_agent = SettledShopAgent(unique_id, self, rental_cost, subsidy_cost, platform_e_commerce_agent)
             self.settled_shop_schedule.add(settled_shop_agent)
 
     def __commerce_purchase(self):
@@ -181,15 +192,30 @@ class CommerceModel(Model):
         e_commerce_agent.add_product(product)
         category_agent.add_commerce_agent(e_commerce_agent)
 
+    def __clear_schedule_agents(self):
+        """ After every step, clear the original data and init the params."""
+        for offline_retailer in self.offline_retailer_schedule.agents:
+            offline_retailer.clear()
+
+        for online_retailer in self.online_retailer_schedule.agents:
+            online_retailer.clear()
+
+        for settled_shop in self.settled_shop_schedule.agents:
+            settled_shop.clear()
+
     def step(self):
         self.datacollector.collect(self)
+        if self.offline_retailer_schedule.steps > 0:
+            self.__clear_schedule_agents()
         # all E-Commerce Agents randomly purchase products from all Category Agents.
         self.__commerce_purchase()
         # all Consumer Agents randomly purchase products from E-Commerce Agents
         self.consumer_schedule.step()
         # After Consumer Agents purchase products, all E-Commerce Agents
         # compute total income and cost, then gain the profit
-
+        self.offline_retailer_schedule.step()
+        self.online_retailer_schedule.step()
+        self.settled_shop_schedule.step()
 
     def run_model(self, n):
         for i in range(n):
@@ -422,12 +448,26 @@ class ECommerceAgent(Agent):
         addition_rate = addition_rate-0.5 if addition_rate>0.5 else addition_rate
         return addition_rate
 
+    def clear(self):
+        """ After every step, clear the original data and init the params."""
+        if self.get_product_count() > 0:
+            self.products = []
+            self.total_cost = 0
+            self.total_income = 0
+            self.total_profit = 0
+            self.total_tax_cost = 0
+            self.addition_rate = ECommerceAgent.compute_addition_rate()
+
     def step(self):
         """After Consumer Agents purchase products, all E-Commerce Agents
            compute total income and cost, then gain the profit.
 
         """
-        self.compute_total_cost()
+        # If the products count of the agent is 0, then it is new created agent and need not to
+        # compute total income/cost and make decision.
+        if self.get_product_count() > 0:
+            self.compute_total_cost()
+            self.make_decision()
 
     def add_product(self, product):
         """ When E-Commerce Agent purchases a kind of product, add the product to the products queue. """
@@ -521,7 +561,7 @@ class ECommerceAgent(Agent):
                 products.append(product)
         return products
 
-    def make_decision(self, offline_retailers, online_retailers, platform_agents, settled_agents):
+    def make_decision(self):
         """在进行一轮销售环节后，计算总成本、总收入、利润，根据市场推出规则确定转变策略,
         从一种类型转为另一种类型;
 
@@ -538,7 +578,53 @@ class ECommerceAgent(Agent):
                 self.model.settled_shop_schedule.remove(self)
         else:
             # 如果本轮未盈利，且尚未连续三年内亏损，则选择转换平台
-            pass
+            if self.commerce_type == CommerceType.offline_retailer:
+                target_commerce_type = choice(CommerceModel.offline_retailer_policy)
+                ECommerceAgent.transform_commerce_type(self, target_commerce_type)
+                self.model.offline_retailer_schedule.remove(self)
+            elif self.commerce_type == CommerceType.online_retailer:
+                target_commerce_type = choice(CommerceModel.online_retailer_policy)
+                ECommerceAgent.transform_commerce_type(self, target_commerce_type)
+                self.model.online_retailer_schedule.remove(self)
+            elif self.commerce_type == CommerceType.settled_shop:
+                target_commerce_type = choice(CommerceModel.settled_shop_policy)
+                ECommerceAgent.transform_commerce_type(self, target_commerce_type)
+                self.model.settled_shop_schedule.remove(self)
+
+
+
+    @classmethod
+    def transform_commerce_type(cls, commerce_agent, target_commerce_type):
+        target_commerce_agent = None
+        if commerce_agent.commerce_type != target_commerce_type:
+            if target_commerce_type == CommerceType.offline_retailer:
+                last_id = get_last_agent_id_from_schedule(commerce_agent.model.offline_retailer_schedule)
+                unique_id = (int(last_id) + 1) if last_id is not None else 1
+                unique_id = 'offline_retailer_' + unique_id
+                rental_cost = 100
+                target_commerce_agent = OfflineRetailerAgent(unique_id, commerce_agent.model, rental_cost)
+                target_commerce_agent.step_profits = commerce_agent.step_profits
+                commerce_agent.model.offline_retailer_schedule.add(target_commerce_agent)
+            elif target_commerce_type == CommerceType.online_retailer:
+                last_id = get_last_agent_id_from_schedule(commerce_agent.model.online_retailer_schedule)
+                unique_id = (int(last_id) + 1) if last_id is not None else 1
+                unique_id = 'online_retailer_' + unique_id
+                technical_cost = 100
+                target_commerce_agent = OnlineRetailerAgent(unique_id, commerce_agent.model, technical_cost)
+                target_commerce_agent.step_profits = commerce_agent.step_profits
+                commerce_agent.model.online_retailer_schedule.add(target_commerce_agent)
+            elif target_commerce_type == CommerceType.settled_shop:
+                last_id = get_last_agent_id_from_schedule(commerce_agent.model.settled_shop_schedule)
+                unique_id = (int(last_id) + 1) if last_id is not None else 1
+                unique_id = 'settled_shop_' + unique_id
+                rental_cost = 40
+                subsidy_cost = 10
+                # 随机选取一个平台电商，作为Settled Shop所依赖的电商平台
+                platform_e_commerce_agent = choice(commerce_agent.model.platform_e_commerce_schedule.agents)
+                target_commerce_agent = SettledShopAgent(unique_id, commerce_agent.model, rental_cost, subsidy_cost, platform_e_commerce_agent)
+                target_commerce_agent.step_profits = commerce_agent.step_profits
+                commerce_agent.model.settled_shop_schedule.add(target_commerce_agent)
+        return target_commerce_agent
 
     def __is_exit_by_profit(self):
         """判断是否连续三年亏损，如果亏损，退出。"""
@@ -586,6 +672,6 @@ class SettledShopAgent(ECommerceAgent):
     """
     platform_agent = None
 
-    def __init__(self, unique_id, model, subsidy_cost, platform_e_commerce_agent=None):
-        super().__init__(unique_id, model, CommerceType.settled_shop, 0, 0, subsidy_cost, [])
+    def __init__(self, unique_id, model, rental_cost, subsidy_cost, platform_e_commerce_agent=None):
+        super().__init__(unique_id, model, CommerceType.settled_shop, rental_cost, 0, subsidy_cost, [])
         self.platform_agent = platform_e_commerce_agent
