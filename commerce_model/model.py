@@ -8,22 +8,22 @@ from mesa.time import RandomActivation
 
 def compute_offline_retailer_num(model):
     """ Compute the number of Offline Retailer Agents after every step. """
-    pass
+    return len(model.offline_retailer_schedule.agents)
 
 
 def compute_online_retailer_num(model):
     """ Compute the number of Online Retailer Agents after every step. """
-    pass
+    return len(model.online_retailer_schedule.agents)
 
 
 def compute_platform_e_commerce_num(model):
     """ Compute the number of E-Commerce Platform Agents after every step."""
-    pass
+    return len(model.platform_e_commerce_schedule.agents)
 
 
 def compute_settled_shop_num(model):
     """ Compute the number of Shops Agent which are settled in E-Commerce Platform Agents after every step. """
-    pass
+    return len(model.settled_shop_schedule.agents)
 
 
 def get_last_agent_id_from_schedule(schedule):
@@ -590,8 +590,6 @@ class ECommerceAgent(Agent):
                 target_commerce_type = choice(CommerceModel.settled_shop_policy)
                 ECommerceAgent.transform_commerce_type(self, target_commerce_type)
                 self.model.settled_shop_schedule.remove(self)
-
-
 
     @classmethod
     def transform_commerce_type(cls, commerce_agent, target_commerce_type):
